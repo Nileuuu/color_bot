@@ -8,7 +8,7 @@ from collections import Counter
 import threading
 from flask import Flask
 
-# === Serveur web pour Render (sinon Render stoppe le service) ===
+# === Fake serveur web pour Render ===
 app = Flask('')
 
 @app.route('/')
@@ -21,12 +21,11 @@ def run_web():
 threading.Thread(target=run_web).start()
 
 # === Bot Discord ===
-
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Dictionnaire simple de couleurs basiques
+# === Couleurs nommées de base ===
 BASIC_COLORS = {
     "rouge": (255, 0, 0),
     "vert": (0, 255, 0),
@@ -51,28 +50,43 @@ def closest_color_name(rgb):
 def get_dominant_color(image):
     image = image.resize((50, 50))
     pixels = list(image.getdata())
-    pixels = [p for p in pixels if len(p) == 3]  # ignore alpha
+    pixels = [p for p in pixels if len(p) == 3]
     most_common = Counter(pixels).most_common(1)[0][0]
     return most_common
+
+def generate_color_image(rgb, size=(100, 100)):
+    img = Image.new("RGB", size, rgb)
+    buffer = BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+    return buffer
 
 @bot.command()
 async def couleur(ctx):
     if ctx.message.attachments:
-        url = ctx.message.attachments[0].url
+        attachment = ctx.message.attachments[0]
         try:
-            response = requests.get(url)
-            image = Image.open(BytesIO(response.content))
-            dominant = get_dominant_color(image)
+            response = requests.get(attachment.url)
+            img = Image.open(BytesIO(response.content))
+            dominant = get_dominant_color(img)
             name = closest_color_name(dominant)
-            await ctx.send(f"🎨 Couleur dominante : **{name}** ({dominant})")
+
+            # Générer une image de la couleur dominante
+            color_img = generate_color_image(dominant)
+
+            file = discord.File(fp=color_img, filename="couleur.png")
+            embed = discord.Embed(title="🎨 Couleur dominante", color=discord.Color.from_rgb(*dominant))
+            embed.add_field(name="Nom approximatif", value=name, inline=True)
+            embed.add_field(name="Valeur RGB", value=str(dominant), inline=True)
+            embed.set_image(url="attachment://couleur.png")
+
+            await ctx.send(file=file, embed=embed)
         except Exception as e:
-            await ctx.send("❌ Erreur en traitant l'image.")
+            print(e)
+            await ctx.send("❌ Erreur lors du traitement de l'image.")
     else:
         await ctx.send("🖼️ Envoie une image avec la commande `!couleur`.")
 
 @bot.event
 async def on_ready():
     print(f"{bot.user} est prêt.")
-
-# Lancer le bot
-bot.run(os.environ["DISCORD_TOKEN"])
