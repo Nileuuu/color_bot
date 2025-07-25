@@ -1,4 +1,5 @@
 discord.py
-requests
-pillow
+Pillow
+numpy
+scikit-learn
 flask
