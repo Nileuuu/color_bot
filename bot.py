@@ -1,92 +1,109 @@
-import os
 import discord
 from discord.ext import commands
 from PIL import Image
-import requests
-from io import BytesIO
-from collections import Counter
-import threading
+import numpy as np
+from sklearn.cluster import KMeans
+import io
+import os
+from math import sqrt
 from flask import Flask
+import threading
 
-# === Fake serveur web pour Render ===
+# ---- Flask keepalive ----
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Le bot tourne !"
+    return "Bot actif."
 
-def run_web():
+def run_flask():
     app.run(host='0.0.0.0', port=8080)
 
-threading.Thread(target=run_web).start()
+threading.Thread(target=run_flask).start()
 
-# === Bot Discord ===
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix='!', intents=intents)
-
-# === Couleurs nommées de base ===
-BASIC_COLORS = {
+# ---- Couleurs connues ----
+COLOR_NAMES = {
+    "noir": (0, 0, 0),
+    "gris": (128, 128, 128),
+    "blanc": (255, 255, 255),
     "rouge": (255, 0, 0),
-    "vert": (0, 255, 0),
+    "vert": (0, 128, 0),
     "bleu": (0, 0, 255),
     "jaune": (255, 255, 0),
-    "orange": (255, 165, 0),
-    "violet": (128, 0, 128),
-    "rose": (255, 192, 203),
-    "noir": (0, 0, 0),
-    "blanc": (255, 255, 255),
-    "gris": (128, 128, 128),
-    "marron": (139, 69, 19),
     "cyan": (0, 255, 255),
-    "magenta": (255, 0, 255)
+    "magenta": (255, 0, 255),
+    "orange": (255, 165, 0),
+    "rose": (255, 192, 203),
+    "marron": (139, 69, 19),
+    "violet": (128, 0, 128),
 }
 
+# ---- Détection couleur dominante ----
+def get_dominant_color(image_bytes, k=3):
+    image = Image.open(io.BytesIO(image_bytes))
+    image = image.convert("RGB")
+    image = image.resize((100, 100))
+    pixels = np.array(image).reshape(-1, 3)
+
+    pixels = [p for p in pixels if not all(c > 245 for c in p)]
+    if not pixels:
+        pixels = np.array(image).reshape(-1, 3)
+
+    kmeans = KMeans(n_clusters=k, n_init=10).fit(pixels)
+    counts = np.bincount(kmeans.labels_)
+    dominant = kmeans.cluster_centers_[np.argmax(counts)].astype(int)
+    return tuple(dominant)
+
 def closest_color_name(rgb):
-    def distance(c):
-        return sum((c[i] - rgb[i]) ** 2 for i in range(3))
-    return min(BASIC_COLORS, key=lambda name: distance(BASIC_COLORS[name]))
+    min_distance = float('inf')
+    closest_name = None
+    for name, ref_rgb in COLOR_NAMES.items():
+        distance = sqrt(sum((rgb[i] - ref_rgb[i]) ** 2 for i in range(3)))
+        if distance < min_distance:
+            min_distance = distance
+            closest_name = name
+    return closest_name
 
-def get_dominant_color(image):
-    image = image.resize((50, 50))
-    pixels = list(image.getdata())
-    pixels = [p for p in pixels if len(p) == 3]
-    most_common = Counter(pixels).most_common(1)[0][0]
-    return most_common
-
-def generate_color_image(rgb, size=(100, 100)):
-    img = Image.new("RGB", size, rgb)
-    buffer = BytesIO()
-    img.save(buffer, format="PNG")
-    buffer.seek(0)
-    return buffer
-
-@bot.command()
-async def couleur(ctx):
-    if ctx.message.attachments:
-        attachment = ctx.message.attachments[0]
-        try:
-            response = requests.get(attachment.url)
-            img = Image.open(BytesIO(response.content))
-            dominant = get_dominant_color(img)
-            name = closest_color_name(dominant)
-
-            # Générer une image de la couleur dominante
-            color_img = generate_color_image(dominant)
-
-            file = discord.File(fp=color_img, filename="couleur.png")
-            embed = discord.Embed(title="🎨 Couleur dominante", color=discord.Color.from_rgb(*dominant))
-            embed.add_field(name="Nom approximatif", value=name, inline=True)
-            embed.add_field(name="Valeur RGB", value=str(dominant), inline=True)
-            embed.set_image(url="attachment://couleur.png")
-
-            await ctx.send(file=file, embed=embed)
-        except Exception as e:
-            print(e)
-            await ctx.send("❌ Erreur lors du traitement de l'image.")
-    else:
-        await ctx.send("🖼️ Envoie une image avec la commande `!couleur`.")
+# ---- Discord bot ----
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f"{bot.user} est prêt.")
+    print(f"✅ Bot connecté en tant que {bot.user}")
+
+@bot.command()
+async def couleur(ctx):
+    if not ctx.message.attachments:
+        await ctx.send("❌ Tu dois envoyer une image en pièce jointe.")
+        return
+
+    attachment = ctx.message.attachments[0]
+    image_bytes = await attachment.read()
+
+    try:
+        dominant_rgb = get_dominant_color(image_bytes)
+        color_name = closest_color_name(dominant_rgb)
+        hex_color = '#%02x%02x%02x' % dominant_rgb
+
+        img = Image.new("RGB", (200, 200), dominant_rgb)
+        img_bytes = io.BytesIO()
+        img.save(img_bytes, format='PNG')
+        img_bytes.seek(0)
+
+        await ctx.send(
+            content=(
+                f"🎨 **Couleur dominante détectée**\n"
+                f"- RGB : {dominant_rgb}\n"
+                f"- HEX : `{hex_color}`\n"
+                f"- Nom approximatif : **{color_name.upper()}**"
+            ),
+            file=discord.File(img_bytes, filename="dominante.png")
+        )
+        print(f"[LOG] Image analysée. Dominante : {dominant_rgb} ≈ {color_name}")
+    except Exception as e:
+        await ctx.send("❌ Erreur lors du traitement de l'image.")
+        print(f"[ERREUR] {e}")
+
+bot.run(os.environ["DISCORD_TOKEN"])
